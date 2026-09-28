@@ -70,8 +70,14 @@ pub struct ApcoreSettings {
     pub task_cleanup_age: u64,
 
     // -- Scanner --
-    /// Default scanner source: "native" or "openapi".
+    /// Default scanner source: "native", or "openapi" (requires the
+    /// `openapi` feature and [`ApcoreSettings::openapi_spec`]).
     pub scanner_source: String,
+    /// Path to the OpenAPI 3.x document (JSON or YAML) scanned when
+    /// `scanner_source` is "openapi". Read by `AxumApcore::scan` /
+    /// `init_app`; ignored by other sources.
+    #[serde(default)]
+    pub openapi_spec: Option<PathBuf>,
 
     // -- Advanced --
     /// Whether to enable hot-reload for module bindings.
@@ -106,6 +112,7 @@ impl Default for ApcoreSettings {
             task_max_tasks: 1000,
             task_cleanup_age: 3600,
             scanner_source: "native".into(),
+            openapi_spec: None,
             hot_reload: false,
             output_formatter: None,
             extra: HashMap::new(),
@@ -195,6 +202,11 @@ impl ApcoreSettings {
         if let Ok(v) = std::env::var("APCORE_SCANNER_SOURCE") {
             settings.scanner_source = v;
         }
+        if let Ok(v) = std::env::var("APCORE_OPENAPI_SPEC") {
+            if !v.trim().is_empty() {
+                settings.openapi_spec = Some(PathBuf::from(v));
+            }
+        }
 
         // Advanced
         if let Ok(v) = std::env::var("APCORE_HOT_RELOAD") {
@@ -218,14 +230,7 @@ impl ApcoreSettings {
             ));
         }
 
-        let valid_sources = ["native", "openapi"];
-        if !valid_sources.contains(&self.scanner_source.as_str()) {
-            errors.push(format!(
-                "Invalid APCORE_SCANNER_SOURCE: '{}'. Must be one of: {}",
-                self.scanner_source,
-                valid_sources.join(", ")
-            ));
-        }
+        errors.extend(self.validate_scanner());
 
         if self.serve_port == 0 {
             errors.push("APCORE_SERVE_PORT must be > 0".into());
@@ -235,6 +240,47 @@ impl ApcoreSettings {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+
+    /// Validate `scanner_source` and, for "openapi", `openapi_spec`.
+    ///
+    /// "openapi" is only a valid source when the `openapi` feature is
+    /// enabled, and it needs `openapi_spec` to name an existing file (the
+    /// file is parsed when scanning, not here).
+    fn validate_scanner(&self) -> Vec<String> {
+        let valid_sources: &[&str] = if cfg!(feature = "openapi") {
+            &["native", "openapi"]
+        } else {
+            &["native"]
+        };
+        if !valid_sources.contains(&self.scanner_source.as_str()) {
+            let feature_hint = if cfg!(feature = "openapi") {
+                ""
+            } else {
+                " ('openapi' requires the `openapi` feature)"
+            };
+            return vec![format!(
+                "Invalid APCORE_SCANNER_SOURCE: '{}'. Must be one of: {}{}",
+                self.scanner_source,
+                valid_sources.join(", "),
+                feature_hint
+            )];
+        }
+        if self.scanner_source != "openapi" {
+            return vec![];
+        }
+        match &self.openapi_spec {
+            None => vec![
+                "APCORE_SCANNER_SOURCE=openapi requires APCORE_OPENAPI_SPEC: the path to an \
+                 OpenAPI 3.x document (JSON or YAML)"
+                    .into(),
+            ],
+            Some(path) if !path.is_file() => vec![format!(
+                "APCORE_OPENAPI_SPEC: '{}' is not an existing file",
+                path.display()
+            )],
+            Some(_) => vec![],
         }
     }
 }
@@ -291,6 +337,71 @@ mod tests {
         };
         let err = s.validate().unwrap_err();
         assert!(err[0].contains("APCORE_SCANNER_SOURCE"));
+    }
+
+    #[cfg(feature = "openapi")]
+    #[test]
+    fn test_validate_openapi_without_spec_rejected() {
+        let s = ApcoreSettings {
+            scanner_source: "openapi".into(),
+            ..ApcoreSettings::default()
+        };
+        let err = s.validate().unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert!(err[0].contains("APCORE_OPENAPI_SPEC"));
+    }
+
+    #[cfg(feature = "openapi")]
+    #[test]
+    fn test_validate_openapi_with_missing_spec_file_rejected() {
+        let s = ApcoreSettings {
+            scanner_source: "openapi".into(),
+            openapi_spec: Some(PathBuf::from("/nonexistent/axum-apcore/openapi.json")),
+            ..ApcoreSettings::default()
+        };
+        let err = s.validate().unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert!(err[0].contains("openapi.json"));
+    }
+
+    #[cfg(feature = "openapi")]
+    #[test]
+    fn test_validate_openapi_with_spec_file_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openapi.yaml");
+        std::fs::write(&path, "openapi: 3.1.0\npaths: {}\n").unwrap();
+        let s = ApcoreSettings {
+            scanner_source: "openapi".into(),
+            openapi_spec: Some(path),
+            ..ApcoreSettings::default()
+        };
+        assert!(s.validate().is_ok());
+    }
+
+    #[cfg(not(feature = "openapi"))]
+    #[test]
+    fn test_validate_openapi_rejected_without_feature() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openapi.yaml");
+        std::fs::write(&path, "openapi: 3.1.0\npaths: {}\n").unwrap();
+        let s = ApcoreSettings {
+            scanner_source: "openapi".into(),
+            openapi_spec: Some(path),
+            ..ApcoreSettings::default()
+        };
+        let err = s.validate().unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert!(err[0].contains("APCORE_SCANNER_SOURCE"));
+        assert!(err[0].contains("`openapi` feature"));
+    }
+
+    #[test]
+    fn test_validate_native_ignores_openapi_spec() {
+        let s = ApcoreSettings {
+            openapi_spec: Some(PathBuf::from("/nonexistent/axum-apcore/openapi.json")),
+            ..ApcoreSettings::default()
+        };
+        assert!(s.validate().is_ok());
     }
 
     #[test]

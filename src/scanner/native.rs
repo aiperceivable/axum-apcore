@@ -4,8 +4,8 @@
 // metadata at runtime. This scanner uses a compile-time metadata registry
 // populated via the `ap_handler!` macro or manual `RouteMetadata` registration.
 //
-// For OpenAPI-based scanning (where utoipa generates the spec), use the
-// "openapi" feature and `OpenAPIScanner` instead.
+// For OpenAPI-based scanning (e.g. a utoipa-generated OpenAPI 3.x document),
+// use the "openapi" feature and `OpenAPIScanner` instead.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -122,22 +122,22 @@ impl NativeAxumScanner {
         // over the dotted module_id when present (apcore-toolkit 0.5+).
         let suggested_alias = generate_suggested_alias(&meta.path, &meta.method);
 
-        ScannedModule {
+        // `ScannedModule::new` + field assignment rather than a struct
+        // literal: the struct is not `#[non_exhaustive]` and the toolkit
+        // bound is open-ended, so a literal would break on any added field.
+        let mut module = ScannedModule::new(
             module_id,
-            description: meta.description.clone(),
-            input_schema: meta.input_schema.clone(),
-            output_schema: meta.output_schema.clone(),
-            tags: meta.tags.clone(),
-            target: format!("axum::{}", meta.handler_name),
-            version: "1.0.0".into(),
-            annotations: Some(annotations),
-            documentation: meta.documentation.clone(),
-            suggested_alias: Some(suggested_alias),
-            examples: vec![],
-            metadata: metadata_map,
-            display: None,
-            warnings: vec![],
-        }
+            meta.description.clone(),
+            meta.input_schema.clone(),
+            meta.output_schema.clone(),
+            meta.tags.clone(),
+            format!("axum::{}", meta.handler_name),
+        );
+        module.annotations = Some(annotations);
+        module.documentation = meta.documentation.clone();
+        module.suggested_alias = Some(suggested_alias);
+        module.metadata = metadata_map;
+        module
     }
 }
 

@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [Unreleased]
+
+Planned as 0.4.0. The `openapi` scanner source becomes reachable from every entry point, and OpenAPI traversal is delegated to `apcore_toolkit::OpenAPIScanner` (apcore-toolkit 0.12).
+
+### Breaking changes
+
+- **`get_scanner("openapi")` returns `Err`.** It used to return a scanner whose every `scan()` failed. A source name cannot supply a document; use `get_scanner_with_spec("openapi", Some(spec))`.
+- **`ApcoreSettings::validate()` is stricter for the `openapi` source.** It rejects `scanner_source = "openapi"` unless `openapi_spec` names an existing file. When the `openapi` feature is disabled it rejects `"openapi"` outright; before, the value was accepted and then failed at scan time.
+- **New public fields.** `ApcoreSettings::openapi_spec`, `CreateCliConfig::openapi_spec` and `cli::Commands::Scan::spec` are new. A struct literal or exhaustive pattern that lists every field must add them; the `..Default::default()` form is unaffected.
+- **`OpenAPIScanner` has a private field** (the bound document), so a struct literal (`OpenAPIScanner { simplify_ids }`) no longer compiles. Construct it with `new()`, `with_simplify_ids()` or `with_spec()`. `simplify_ids` stays a public field.
+- **OpenAPI scan output changes.** These come from delegating to the toolkit. Operations *with* an operationId keep their `module_id`, `target` and `suggested_alias`.
+  - An operation **without an operationId** gets the toolkit's path-derived `module_id` (`health.get`, `users.id.get`) and the target `"GET /path"`. Before, it got `default.unknown.<method>` (then `_2`, `_3`, ...) and every such operation shared the target `axum::unknown`. An empty `operationId: ""` now counts as absent; before, it was used verbatim (`users..get`).
+  - **Swagger 2.0** documents, and any document without an `openapi: 3.0.x` / `3.1.x` key, are rejected with `AxumApcoreError::Scanner`. Before, they were scanned.
+  - A document **without `paths`** yields an empty list. Before, it was an error.
+  - `deprecated: true` is recorded as `annotations.extra["deprecated"] = true`. Before, it was ignored.
+  - `version` comes from `info.version`. Before, it was hard-coded to `"1.0.0"`, which is now only the fallback.
+  - `description` is the summary, or else the **first non-empty line** of the description. Before, it was the whole description, which `documentation` still carries.
+  - `metadata.openapi` is new and records `spec_version`, `operation_id`, `summary`, and `server_url` when resolvable. `warnings` now reports unresolvable or external `$ref`s and a missing 2xx response.
+  - include/exclude filters now run before ID deduplication (the toolkit's order). A pattern can therefore no longer select a `_2` dedup suffix.
+  - **Resolved against apcore-toolkit's next release (0.13), IDs apcore could not register are normalised.** The toolkit will pass every emitted ID through its Canonical-ID normalisation, so an axum ID with uppercase letters — `Items.replaceItemSub.put`, from a capitalised tag or a camelCase operationId — becomes `items.replace_item_sub.put`, and include/exclude patterns match that spelling. No working ID changes: a legal ID is returned unchanged, and an uppercase one never registered. The `apcore-toolkit = ">=0.12"` bound picks the release up automatically; the test suite passes against both 0.12.0 and the unreleased toolkit.
+
+### Added
+
+- **`OpenAPIScanner::with_spec(spec)`** binds an OpenAPI document at construction; `AxumScanner::scan` scans it and ignores the `Router`. `OpenAPIScanner::spec()` returns the bound document. `OpenAPIScanner` now derives `Debug` and `Clone`.
+- **`get_scanner_with_spec(source, Option<serde_json::Value>)`** builds a scanner by source name and binds the document for `"openapi"`. It is re-exported at the crate root.
+- **`scanner::openapi::load_spec_file(&Path)`** loads a local JSON or YAML OpenAPI document. The format is detected from the content.
+- **`ApcoreSettings::openapi_spec` / `APCORE_OPENAPI_SPEC`** give the document path used by `AxumApcore::scan` / `init_app` when `APCORE_SCANNER_SOURCE=openapi`.
+- **CLI `scan --spec <PATH>`** gives the document for `--source openapi`. It defaults to `APCORE_OPENAPI_SPEC`.
+- **`CreateCliConfig::openapi_spec`** is the document `create_cli` scans when `scan_source` is `"openapi"`.
+
+### Changed
+
+- **`OpenAPIScanner` delegates to `apcore_toolkit::OpenAPIScanner`.** axum-apcore's naming is kept through the toolkit's hooks. The `derive_module_id` hook keeps `{tag}.{func}.{method}` for operations with an operationId and otherwise falls back to the toolkit's path derivation. The `transform_module` hook keeps `target = axum::{operationId}` when there is one, plus `suggested_alias`. The scanner's own traversal, `is_http_method`, and the `"unknown"` operationId fallback are gone.
+- **`scan_spec` stays synchronous.** It drives the toolkit's `async fn scan` with `futures::FutureExt::now_or_never`. That call polls exactly once and never parks the thread, so it cannot deadlock, even on a current-thread Tokio runtime. The toolkit 0.12 scan has no suspension point. If a later toolkit version adds one, `scan_spec` returns a `Scanner` error rather than hanging.
+- **Toolkit errors map onto `AxumApcoreError`.** An invalid include/exclude regex stays `AxumApcoreError::Regex`, as before. Every other `ScannerError` becomes `AxumApcoreError::Scanner`.
+- **`apcore-toolkit >= 0.12`** (was `>= 0.10`).
+- **`ScannedModule` is built with `ScannedModule::new` plus field assignment**, in `NativeAxumScanner` and the OpenAPI hooks, instead of a 14-field struct literal. The struct is not `#[non_exhaustive]` and the toolkit bound is open-ended, so a field the toolkit adds no longer breaks the build. The native scanner's output is unchanged.
+- **`OpenAPIScanner::simplify_ids` is documented as a misnomer.** It only strips the trailing `_{method}` from an operationId, which is what fastapi-apcore's *default* (`simplify_ids=False`) does. It is not the deprecated display simplification of apcore PROTOCOL_SPEC §5.13.11, so the defaults are unchanged and there is no deprecation warning.
+- **`AxumScanner` docs corrected.** They claimed the trait wraps an apcore-toolkit scanner trait and that the native scanner introspects the `Router`; neither is true. `AxumScanner` is axum-apcore's own trait, carrying the include/exclude filters on every call, and both scanners ignore the type-erased `Router`. It stays off `apcore_toolkit::BaseScanner` because nothing in the ecosystem dispatches over that trait. Migrating is possible once apcore-toolkit-rust makes `BaseScanner::scan` fallible, but is out of scope here.
+- **`[lints.clippy] result_large_err = "allow"`** is now set package-wide. Handlers must return `Result<Value, ModuleError>`, and current clippy flags that return type in every test and example handler, so `cargo clippy --all-targets --all-features -- -D warnings` failed on 0.3.0 as well. `src/lib.rs` already allowed the lint for the library.
+
+### Fixed
+
+- **The `openapi` scanner source was a dead path.** `get_scanner("openapi")` returned a scanner whose `AxumScanner::scan` always failed, because a `Router` carries no OpenAPI document. As a result `init_app` / `scan` with `APCORE_SCANNER_SOURCE=openapi`, `axum-apcore scan --source openapi` and `create_cli` with `scan_source: "openapi"` all failed. Each now works with a document supplied as described above.
+- **Operations without an operationId collided.** They collapsed onto `default.unknown.<method>` / `..._2` with one shared `target`, so only one handler could be bound. Each now gets a distinct `module_id` and `target`.
+- **README:** `APCORE_TASK_MAX_TASKS` defaults to `1000`; it was documented as `100`.
+
+### Removed
+
+- **The optional `utoipa` dependency.** Nothing used it. The `openapi` feature is kept, now pulling in no extra crate, so `features = ["openapi"]` still builds. utoipa apps pass `serde_json::to_value(ApiDoc::openapi())`.
+
+---
 ## [0.3.0] - 2026-07-16
 
 ACL demo + dependency uplift to the aligned apcore 0.26.0 / apcore-mcp 0.17.2 governance train.

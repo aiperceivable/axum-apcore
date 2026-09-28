@@ -20,9 +20,16 @@ categories = [
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[lints.clippy]
+# Module handlers must return `Result<Value, apcore::ModuleError>` (apcore's
+# `HandlerFn` contract), and `ModuleError` exceeds the lint's 128-byte
+# threshold. `src/lib.rs` already allowed this for the library; this extends
+# it to tests and examples, whose handlers `clippy --all-targets` also checks.
+result_large_err = "allow"
+
 [dependencies]
 apcore = ">=0.26"
-apcore-toolkit = ">=0.10"
+apcore-toolkit = ">=0.12"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["json"] }
 tower = "0.5"
@@ -46,14 +53,15 @@ apcore-cli = { version = ">=0.10.4", optional = true }
 # Optional: MCP server support
 apcore-mcp = { version = ">=0.17.2", optional = true }
 
-# Optional: OpenAPI scanner (via utoipa)
-utoipa = { version = "5", optional = true }
-
 [features]
 default = []
 cli = ["dep:clap", "dep:clap_complete", "dep:apcore-cli", "apcore-toolkit/http-proxy"]
 mcp = ["dep:apcore-mcp"]
-openapi = ["dep:utoipa"]
+# OpenAPI 3.x document scanning (`scanner::openapi`). Pulls in no extra crate:
+# traversal is delegated to apcore-toolkit and the document is a plain
+# `serde_json::Value` (for a utoipa app, `serde_json::to_value(ApiDoc::openapi())`;
+# otherwise a JSON or YAML file).
+openapi = []
 all = ["cli", "mcp", "openapi"]
 
 [[example]]

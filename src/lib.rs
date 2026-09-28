@@ -25,7 +25,7 @@ pub use engine::registry::{get_executor, get_registry};
 pub use engine::tasks::{TaskInfo, TaskManager};
 pub use output::AxumRegistryWriter;
 pub use scanner::native::NativeAxumScanner;
-pub use scanner::{get_scanner, AxumScanner};
+pub use scanner::{get_scanner, get_scanner_with_spec, AxumScanner};
 
 #[cfg(feature = "openapi")]
 pub use scanner::openapi::OpenAPIScanner;

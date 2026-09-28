@@ -391,6 +391,183 @@ fn test_openapi_scanner_end_to_end() {
     assert!(modules[0].annotations.as_ref().unwrap().readonly);
 }
 
+#[cfg(feature = "openapi")]
+async fn oa_health_handler(_input: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+    Ok(json!({"route": "health"}))
+}
+
+#[cfg(feature = "openapi")]
+async fn oa_metrics_handler(_input: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+    Ok(json!({"route": "metrics"}))
+}
+
+/// Two operations with an operationId-free path plus one utoipa-style
+/// operation, under a path prefix unique to these tests (the registry and
+/// executor are process-global).
+#[cfg(feature = "openapi")]
+fn oa_e2e_spec() -> Value {
+    json!({
+        "openapi": "3.1.0",
+        "info": {"title": "E2E", "version": "3.2.1"},
+        "paths": {
+            "/oa_e2e/items/{id}": {
+                "get": {
+                    "operationId": "oa_e2e_get_item_get",
+                    "summary": "Get item",
+                    "tags": ["oa_e2e"],
+                    "parameters": [{"name": "id", "in": "path", "required": true,
+                                    "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "OK"}}
+                }
+            },
+            "/oa_e2e/health": {
+                "get": {"summary": "Health", "responses": {"200": {"description": "OK"}}}
+            },
+            "/oa_e2e/metrics": {
+                "get": {"summary": "Metrics", "responses": {"200": {"description": "OK"}}}
+            }
+        }
+    })
+}
+
+#[cfg(feature = "openapi")]
+#[tokio::test]
+async fn test_openapi_source_end_to_end_through_init_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("openapi.json");
+    std::fs::write(&path, oa_e2e_spec().to_string()).unwrap();
+
+    let settings = ApcoreSettings {
+        auto_discover: false,
+        scanner_source: "openapi".into(),
+        openapi_spec: Some(path),
+        ..ApcoreSettings::default()
+    };
+    assert!(settings.validate().is_ok());
+
+    let apcore = AxumApcore::with_settings(settings);
+    // `target` is the handler key: `axum::{operationId}` when there is one,
+    // the `"GET /path"` route descriptor otherwise.
+    apcore.register_handler(
+        "axum::oa_e2e_get_item_get",
+        Arc::new(|input, ctx| Box::pin(echo_handler(input, ctx))),
+    );
+    apcore.register_handler(
+        "GET /oa_e2e/health",
+        Arc::new(|input, ctx| Box::pin(oa_health_handler(input, ctx))),
+    );
+    apcore.register_handler(
+        "GET /oa_e2e/metrics",
+        Arc::new(|input, ctx| Box::pin(oa_metrics_handler(input, ctx))),
+    );
+    apcore.init_app(&Router::new()).await.unwrap();
+
+    let modules = apcore.list_modules();
+    for expected in [
+        "oa_e2e.oa_e2e_get_item.get",
+        "oa_e2e.health.get",
+        "oa_e2e.metrics.get",
+    ] {
+        assert!(
+            modules.iter().any(|m| m == expected),
+            "missing {expected} in {modules:?}"
+        );
+    }
+
+    let item = apcore
+        .call_anonymous("oa_e2e.oa_e2e_get_item.get", json!({"id": "7"}))
+        .await
+        .unwrap();
+    assert_eq!(item["echo"]["id"], "7");
+
+    // Without an operationId both operations used to collapse onto
+    // `default.unknown.get` / `default.unknown.get_2` with one shared target,
+    // so only one handler could ever be bound. Each now reaches its own.
+    let health = apcore
+        .call_anonymous("oa_e2e.health.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(health["route"], "health");
+    let metrics = apcore
+        .call_anonymous("oa_e2e.metrics.get", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(metrics["route"], "metrics");
+}
+
+#[cfg(feature = "openapi")]
+#[tokio::test]
+async fn test_openapi_source_scans_yaml_spec_through_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("openapi.yaml");
+    let yaml = serde_yaml::to_string(&oa_e2e_spec()).unwrap();
+    std::fs::write(&path, yaml).unwrap();
+
+    let apcore = AxumApcore::with_settings(ApcoreSettings {
+        auto_discover: false,
+        scanner_source: "openapi".into(),
+        openapi_spec: Some(path),
+        ..ApcoreSettings::default()
+    });
+    let modules = apcore
+        .scan(&Router::new(), Some("health|metrics"), None)
+        .await
+        .unwrap();
+    let mut targets: Vec<&str> = modules.iter().map(|m| m.target.as_str()).collect();
+    targets.sort();
+    assert_eq!(targets, vec!["GET /oa_e2e/health", "GET /oa_e2e/metrics"]);
+    assert!(modules.iter().all(|m| m.version == "3.2.1"));
+}
+
+#[cfg(feature = "openapi")]
+#[tokio::test]
+async fn test_openapi_source_without_spec_is_rejected() {
+    let settings = ApcoreSettings {
+        auto_discover: false,
+        scanner_source: "openapi".into(),
+        ..ApcoreSettings::default()
+    };
+    let errors = settings.validate().unwrap_err();
+    assert!(errors.iter().any(|e| e.contains("APCORE_OPENAPI_SPEC")));
+
+    let apcore = AxumApcore::with_settings(settings);
+    let err = apcore.init_app(&Router::new()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("APCORE_OPENAPI_SPEC"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(all(feature = "openapi", feature = "cli"))]
+#[tokio::test]
+async fn test_openapi_source_reaches_create_cli() {
+    let apcore = AxumApcore::with_settings(test_settings());
+
+    let config = axum_apcore::CreateCliConfig {
+        scan_source: "openapi".into(),
+        openapi_spec: Some(oa_e2e_spec()),
+        ..Default::default()
+    };
+    let cmd = apcore.create_cli(&Router::new(), config).await.unwrap();
+    let builtins = ["list", "describe", "completion", "man", "init"];
+    let route_commands: Vec<String> = cmd
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .filter(|name| !builtins.contains(&name.as_str()))
+        .collect();
+    assert_eq!(
+        route_commands.len(),
+        3,
+        "expected one command per operation, got {route_commands:?}"
+    );
+
+    let missing = axum_apcore::CreateCliConfig {
+        scan_source: "openapi".into(),
+        ..Default::default()
+    };
+    assert!(apcore.create_cli(&Router::new(), missing).await.is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Settings validation
 // ---------------------------------------------------------------------------

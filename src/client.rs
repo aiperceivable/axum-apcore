@@ -22,7 +22,7 @@ use crate::engine::registry::{get_executor, get_registry};
 use crate::engine::tasks::{TaskInfo, TaskManager};
 use crate::errors::AxumApcoreError;
 use crate::output::AxumRegistryWriter;
-use crate::scanner::get_scanner;
+use crate::scanner::get_scanner_with_spec_path;
 
 /// Main entry point for axum-apcore integration.
 ///
@@ -122,13 +122,20 @@ impl AxumApcore {
     }
 
     /// Scan Axum routes and return module definitions.
+    ///
+    /// Uses `settings.scanner_source`. For "openapi", the document is read
+    /// from `settings.openapi_spec` (`APCORE_OPENAPI_SPEC`) on every call;
+    /// without it, this fails with a Scanner error.
     pub async fn scan(
         &self,
         router: &axum::Router,
         include: Option<&str>,
         exclude: Option<&str>,
     ) -> Result<Vec<ScannedModule>, AxumApcoreError> {
-        let scanner = get_scanner(&self.settings.scanner_source)?;
+        let scanner = get_scanner_with_spec_path(
+            &self.settings.scanner_source,
+            self.settings.openapi_spec.as_deref(),
+        )?;
         scanner.scan(router, include, exclude).await
     }
 
@@ -483,7 +490,7 @@ impl AxumApcore {
     pub async fn create_cli(
         &self,
         router: &axum::Router,
-        config: CreateCliConfig,
+        mut config: CreateCliConfig,
     ) -> Result<clap::Command, AxumApcoreError> {
         use apcore_cli::discovery::{
             register_describe_command, register_list_command, RegistryProvider,
@@ -500,8 +507,10 @@ impl AxumApcore {
         set_all_options_help(config.verbose_help);
         set_docs_url(config.docs_url.clone());
 
-        // 1. Scan routes using the config's scanner source (not self.settings).
-        let scanner = crate::scanner::get_scanner(&config.scan_source)?;
+        // 1. Scan routes using the config's scanner source (not self.settings);
+        // the "openapi" source scans `config.openapi_spec`.
+        let scanner =
+            crate::scanner::get_scanner_with_spec(&config.scan_source, config.openapi_spec.take())?;
         let modules = scanner
             .scan(router, config.include.as_deref(), config.exclude.as_deref())
             .await?;
@@ -593,8 +602,14 @@ pub struct CreateCliConfig {
     pub auth_header_factory: Option<Box<dyn Fn() -> HashMap<String, String> + Send + Sync>>,
     /// HTTP request timeout in seconds.
     pub timeout: f64,
-    /// Scanner source: "native" or "openapi".
+    /// Scanner source: "native" or "openapi" (requires the `openapi` feature
+    /// and `openapi_spec`).
     pub scan_source: String,
+    /// OpenAPI 3.x document scanned when `scan_source` is "openapi", e.g.
+    /// `serde_json::to_value(ApiDoc::openapi())` for a utoipa app, or a file
+    /// read with `axum_apcore::scanner::openapi::load_spec_file`. Ignored by
+    /// other sources.
+    pub openapi_spec: Option<Value>,
     /// Include regex filter for module IDs.
     pub include: Option<String>,
     /// Exclude regex filter for module IDs.
@@ -616,6 +631,7 @@ impl Default for CreateCliConfig {
             auth_header_factory: None,
             timeout: 60.0,
             scan_source: "native".to_string(),
+            openapi_spec: None,
             include: None,
             exclude: None,
             help_text_max_length: 1000,

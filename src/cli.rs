@@ -4,12 +4,14 @@
 // The scan/serve/export/tasks commands are framework-specific.
 // The list/describe/completion/man/init commands are delegated to apcore-cli.
 
+use std::path::PathBuf;
+
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::engine::tasks::TaskManager;
 use crate::errors::AxumApcoreError;
 use crate::output::AxumRegistryWriter;
-use crate::scanner::get_scanner;
+use crate::scanner::{get_scanner_with_spec_path, AxumScanner};
 
 // clap_complete is feature-gated with cli, same as this module.
 use clap_complete::Shell;
@@ -29,6 +31,11 @@ pub enum Commands {
         /// Scanner source: "native" or "openapi".
         #[arg(long, default_value = "native")]
         source: String,
+
+        /// OpenAPI 3.x document (JSON or YAML file) to scan; required by
+        /// `--source openapi`, ignored otherwise.
+        #[arg(long, value_name = "PATH", env = "APCORE_OPENAPI_SPEC")]
+        spec: Option<PathBuf>,
 
         /// Output format: "registry", "yaml", or "http-proxy".
         #[arg(long, default_value = "registry")]
@@ -213,13 +220,26 @@ pub async fn run(cli: Cli) -> Result<(), AxumApcoreError> {
     match cli.command {
         Commands::Scan {
             source,
+            spec,
             output,
             dir,
             dry_run,
             include,
             exclude,
             verify,
-        } => run_scan(source, output, dir, dry_run, include, exclude, verify).await,
+        } => {
+            let scanner = get_scanner_with_spec_path(&source, spec.as_deref())?;
+            run_scan(
+                scanner.as_ref(),
+                output,
+                dir,
+                dry_run,
+                include,
+                exclude,
+                verify,
+            )
+            .await
+        }
         Commands::Serve {
             transport,
             host,
@@ -244,9 +264,9 @@ pub async fn run(cli: Cli) -> Result<(), AxumApcoreError> {
     }
 }
 
-/// Execute the `scan` command.
+/// Execute the `scan` command with an already-resolved scanner.
 async fn run_scan(
-    source: String,
+    scanner: &dyn AxumScanner,
     output: String,
     dir: Option<String>,
     dry_run: bool,
@@ -254,14 +274,17 @@ async fn run_scan(
     exclude: Option<String>,
     verify: bool,
 ) -> Result<(), AxumApcoreError> {
-    let scanner = get_scanner(&source)?;
     let router = axum::Router::new();
 
     let include_ref = include.as_deref();
     let exclude_ref = exclude.as_deref();
     let modules = scanner.scan(&router, include_ref, exclude_ref).await?;
 
-    println!("Scanned {} modules via '{}' scanner", modules.len(), source);
+    println!(
+        "Scanned {} modules via '{}' scanner",
+        modules.len(),
+        scanner.source_name()
+    );
     for m in &modules {
         println!("  - {} ({})", m.module_id, m.description);
     }
@@ -655,6 +678,8 @@ mod tests {
             "scan",
             "--source",
             "openapi",
+            "--spec",
+            "openapi.yaml",
             "--output",
             "yaml",
             "--dry-run",
@@ -666,6 +691,7 @@ mod tests {
         match cli.command {
             Commands::Scan {
                 source,
+                spec,
                 output,
                 dry_run,
                 include,
@@ -673,6 +699,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, "openapi");
+                assert_eq!(spec, Some(PathBuf::from("openapi.yaml")));
                 assert_eq!(output, "yaml");
                 assert!(dry_run);
                 assert_eq!(include.unwrap(), "users");
@@ -680,6 +707,59 @@ mod tests {
             }
             _ => panic!("Expected Scan command"),
         }
+    }
+
+    fn scan_command(source: &str, spec: Option<PathBuf>) -> Cli {
+        Cli {
+            command: Commands::Scan {
+                source: source.to_string(),
+                spec,
+                output: "registry".to_string(),
+                dir: None,
+                dry_run: false,
+                include: None,
+                exclude: None,
+                verify: true,
+            },
+        }
+    }
+
+    #[cfg(feature = "openapi")]
+    #[tokio::test]
+    async fn test_run_scan_openapi_with_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openapi.json");
+        let spec = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "version": "1.0.0"},
+            "paths": {
+                "/cli_items": {"get": {"operationId": "cli_list_items_get", "tags": ["cli"],
+                                       "responses": {"200": {"description": "OK"}}}},
+                "/cli_health": {"get": {"responses": {"200": {"description": "OK"}}}}
+            }
+        });
+        std::fs::write(&path, spec.to_string()).unwrap();
+        let result = run(scan_command("openapi", Some(path))).await;
+        assert!(
+            result.is_ok(),
+            "scan --source openapi --spec failed: {result:?}"
+        );
+    }
+
+    #[cfg(feature = "openapi")]
+    #[tokio::test]
+    async fn test_run_scan_openapi_without_spec_fails() {
+        match run(scan_command("openapi", None)).await {
+            Err(AxumApcoreError::Scanner(msg)) => assert!(msg.contains("--spec")),
+            other => panic!("expected a Scanner error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_scan_native_ignores_spec() {
+        let missing = PathBuf::from("/nonexistent/axum-apcore/openapi.json");
+        let result = run(scan_command("native", Some(missing))).await;
+        assert!(result.is_ok(), "native scan failed: {result:?}");
     }
 
     #[test]
