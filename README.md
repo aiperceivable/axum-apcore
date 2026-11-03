@@ -67,7 +67,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum-apcore = "0.1"
+axum-apcore = "0.4"
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
@@ -84,7 +84,7 @@ tracing-subscriber = "0.3"
 | `all` | Enable all optional features | — |
 
 ```toml
-axum-apcore = { version = "0.1", features = ["all"] }
+axum-apcore = { version = "0.4", features = ["all"] }
 ```
 
 ## Quick Start
@@ -225,6 +225,12 @@ Traversal, schema extraction and deduplication are delegated to
 | `module_id` | `{first tag or "default"}.{operationId}.{method}`, trailing `_{method}` stripped from the operationId | toolkit path derivation: `health.get`, `users.id.get` |
 | `target` (the `register_handler` key) | `axum::{operationId}` | `"GET /health"` |
 | `suggested_alias` | `generate_suggested_alias(path, method)` | same |
+
+The toolkit normalises each final `module_id` into apcore's canonical alphabet
+after axum's hooks run: a capitalised tag or camelCase operationId
+(`Items.replaceItemSub.put`) becomes `items.replace_item_sub.put`, and
+include/exclude patterns match the normalised spelling. An ID that is already
+legal is never rewritten.
 
 Bind executable handlers to a module's `target`:
 

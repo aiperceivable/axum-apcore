@@ -23,9 +23,8 @@ use crate::errors::AxumApcoreError;
 /// trait: it carries the include/exclude filters on every `scan` call.
 /// Nothing in the apcore ecosystem dispatches over
 /// `apcore_toolkit::BaseScanner`, so implementing that trait would buy no
-/// interoperability today. Migrating onto it is possible (the next
-/// apcore-toolkit-rust release makes `BaseScanner::scan` fallible) but is
-/// out of scope for now.
+/// interoperability today. Migrating onto it is possible (`BaseScanner::scan`
+/// has been fallible since apcore-toolkit 0.13) but is out of scope for now.
 ///
 /// Axum's `Router` is type-erased, so no scanner can introspect it: the
 /// native scanner reads the route metadata registry, and the OpenAPI scanner

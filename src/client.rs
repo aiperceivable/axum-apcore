@@ -396,9 +396,9 @@ impl AxumApcore {
     /// Create an MCP server backed by the live executor (requires "mcp" feature).
     ///
     /// The server is wired to the same `Arc<Executor>` this client executes
-    /// against (apcore-mcp 0.17 actually drives the transport and registers the
-    /// executor's modules as tools), so MCP tool calls run the real registered
-    /// handlers rather than serving schema-only definitions.
+    /// against (apcore-mcp drives the transport and registers the executor's
+    /// modules as tools), so MCP tool calls run the real registered handlers
+    /// rather than serving schema-only definitions.
     #[cfg(feature = "mcp")]
     pub fn create_mcp_server(&self) -> Result<apcore_mcp::MCPServer, AxumApcoreError> {
         let transport: apcore_mcp::TransportKind = self

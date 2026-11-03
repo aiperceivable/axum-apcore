@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 ## [Unreleased]
 
-Planned as 0.4.0. The `openapi` scanner source becomes reachable from every entry point, and OpenAPI traversal is delegated to `apcore_toolkit::OpenAPIScanner` (apcore-toolkit 0.12).
+---
+## [0.4.0] - 2026-11-03
+
+The `openapi` scanner source becomes reachable from every entry point, OpenAPI traversal is delegated to `apcore_toolkit::OpenAPIScanner`, and the dependency floors move to the published aligned ecosystem (apcore 0.32.3, apcore-toolkit 0.14.1, apcore-cli 0.12.5, apcore-mcp 0.23.2).
 
 ### Breaking changes
 
@@ -25,7 +28,7 @@ Planned as 0.4.0. The `openapi` scanner source becomes reachable from every entr
   - `description` is the summary, or else the **first non-empty line** of the description. Before, it was the whole description, which `documentation` still carries.
   - `metadata.openapi` is new and records `spec_version`, `operation_id`, `summary`, and `server_url` when resolvable. `warnings` now reports unresolvable or external `$ref`s and a missing 2xx response.
   - include/exclude filters now run before ID deduplication (the toolkit's order). A pattern can therefore no longer select a `_2` dedup suffix.
-  - **Resolved against apcore-toolkit's next release (0.13), IDs apcore could not register are normalised.** The toolkit will pass every emitted ID through its Canonical-ID normalisation, so an axum ID with uppercase letters — `Items.replaceItemSub.put`, from a capitalised tag or a camelCase operationId — becomes `items.replace_item_sub.put`, and include/exclude patterns match that spelling. No working ID changes: a legal ID is returned unchanged, and an uppercase one never registered. The `apcore-toolkit = ">=0.12"` bound picks the release up automatically; the test suite passes against both 0.12.0 and the unreleased toolkit.
+  - **IDs apcore could not register are normalised by the toolkit.** apcore-toolkit passes every emitted ID through its Canonical-ID normalisation, so an axum ID with uppercase letters — `Items.replaceItemSub.put`, from a capitalised tag or a camelCase operationId — becomes `items.replace_item_sub.put`, and include/exclude patterns match that spelling. No working ID changes: a legal ID is returned unchanged, and an uppercase one never registered. The `apcore-toolkit >= 0.14.1` floor guarantees this behaviour, and the naming test pins the normalised spelling.
 
 ### Added
 
@@ -39,12 +42,13 @@ Planned as 0.4.0. The `openapi` scanner source becomes reachable from every entr
 ### Changed
 
 - **`OpenAPIScanner` delegates to `apcore_toolkit::OpenAPIScanner`.** axum-apcore's naming is kept through the toolkit's hooks. The `derive_module_id` hook keeps `{tag}.{func}.{method}` for operations with an operationId and otherwise falls back to the toolkit's path derivation. The `transform_module` hook keeps `target = axum::{operationId}` when there is one, plus `suggested_alias`. The scanner's own traversal, `is_http_method`, and the `"unknown"` operationId fallback are gone.
-- **`scan_spec` stays synchronous.** It drives the toolkit's `async fn scan` with `futures::FutureExt::now_or_never`. That call polls exactly once and never parks the thread, so it cannot deadlock, even on a current-thread Tokio runtime. The toolkit 0.12 scan has no suspension point. If a later toolkit version adds one, `scan_spec` returns a `Scanner` error rather than hanging.
+- **`scan_spec` stays synchronous.** It drives the toolkit's `async fn scan` with `futures::FutureExt::now_or_never`. That call polls exactly once and never parks the thread, so it cannot deadlock, even on a current-thread Tokio runtime. The toolkit 0.14 scan has no suspension point. If a later toolkit version adds one, `scan_spec` returns a `Scanner` error rather than hanging.
 - **Toolkit errors map onto `AxumApcoreError`.** An invalid include/exclude regex stays `AxumApcoreError::Regex`, as before. Every other `ScannerError` becomes `AxumApcoreError::Scanner`.
-- **`apcore-toolkit >= 0.12`** (was `>= 0.10`).
+- **Dependency floors raised to the published aligned ecosystem:** `apcore >= 0.32.3`, `apcore-toolkit >= 0.14.1` (was `>= 0.10`), `apcore-cli >= 0.12.5` (was `>= 0.10.4`), `apcore-mcp >= 0.23.2` (was `>= 0.17.2`). No call-site changes were required: apcore 0.32.x's governance, cancellation and redaction fixes, toolkit 0.14.x's stricter binding validation, CLI 0.12.x's command surface, and MCP 0.23.x's structured results are all consumed through unchanged public APIs. The `mcp` feature now advertises synchronous object output schemas and negotiates MCP `2025-06-18` automatically.
+- **`axum-apcore` tracks the toolkit's stricter canonical IDs.** apcore-toolkit 0.13+ normalises every OpenAPI `module_id`; the scanner's naming tests no longer accept the pre-0.13 (illegal) uppercase spelling.
 - **`ScannedModule` is built with `ScannedModule::new` plus field assignment**, in `NativeAxumScanner` and the OpenAPI hooks, instead of a 14-field struct literal. The struct is not `#[non_exhaustive]` and the toolkit bound is open-ended, so a field the toolkit adds no longer breaks the build. The native scanner's output is unchanged.
 - **`OpenAPIScanner::simplify_ids` is documented as a misnomer.** It only strips the trailing `_{method}` from an operationId, which is what fastapi-apcore's *default* (`simplify_ids=False`) does. It is not the deprecated display simplification of apcore PROTOCOL_SPEC §5.13.11, so the defaults are unchanged and there is no deprecation warning.
-- **`AxumScanner` docs corrected.** They claimed the trait wraps an apcore-toolkit scanner trait and that the native scanner introspects the `Router`; neither is true. `AxumScanner` is axum-apcore's own trait, carrying the include/exclude filters on every call, and both scanners ignore the type-erased `Router`. It stays off `apcore_toolkit::BaseScanner` because nothing in the ecosystem dispatches over that trait. Migrating is possible once apcore-toolkit-rust makes `BaseScanner::scan` fallible, but is out of scope here.
+- **`AxumScanner` docs corrected.** They claimed the trait wraps an apcore-toolkit scanner trait and that the native scanner introspects the `Router`; neither is true. `AxumScanner` is axum-apcore's own trait, carrying the include/exclude filters on every call, and both scanners ignore the type-erased `Router`. It stays off `apcore_toolkit::BaseScanner` because nothing in the ecosystem dispatches over that trait. Migrating is possible now that `BaseScanner::scan` is fallible (apcore-toolkit 0.13+), but is out of scope here.
 - **`[lints.clippy] result_large_err = "allow"`** is now set package-wide. Handlers must return `Result<Value, ModuleError>`, and current clippy flags that return type in every test and example handler, so `cargo clippy --all-targets --all-features -- -D warnings` failed on 0.3.0 as well. `src/lib.rs` already allowed the lint for the library.
 
 ### Fixed
